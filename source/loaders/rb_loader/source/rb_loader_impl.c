@@ -370,6 +370,21 @@ VALUE rb_type_serialize(value v)
 
 		return rb_str_new(buffer, size);
 	}
+	else if (v_type == TYPE_ARRAY)
+	{
+		size_t iterator, size = value_type_count(v);
+
+		value *array_value = value_to_array(v);
+
+		VALUE rb_array = rb_ary_new_capa((long)size);
+
+		for (iterator = 0; iterator < size; ++iterator)
+		{
+			rb_ary_push(rb_array, rb_type_serialize(array_value[iterator]));
+		}
+
+		return rb_array;
+	}
 	else if (v_type == TYPE_NULL)
 	{
 		return Qnil;
