@@ -131,6 +131,26 @@ future_return future_await(future f, future_resolve_callback resolve_callback, f
 	return NULL;
 }
 
+future_impl future_impl_get(future f)
+{
+	if (f != NULL)
+	{
+		return f->impl;
+	}
+
+	return NULL;
+}
+
+future_interface future_interface_get(future f)
+{
+	if (f != NULL)
+	{
+		return f->interface;
+	}
+
+	return NULL;
+}
+
 void future_stats_debug(void)
 {
 	reflect_memory_tracker_print(future_stats, "FUTURES");

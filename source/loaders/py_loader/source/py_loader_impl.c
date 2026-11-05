@@ -135,6 +135,9 @@ struct loader_impl_py_type
 	PyObject *asyncio_loop;
 	threading_thread asyncio_thread;
 	PyObject *thread_background_future_check;
+	PyObject *thread_background_future_create;
+	PyObject *thread_background_future_resolve;
+	PyObject *thread_background_future_reject;
 	PyObject *thread_background_module;
 	PyObject *thread_background_start;
 	PyObject *thread_background_run;
@@ -1313,6 +1316,158 @@ value py_loader_impl_capi_to_value(loader_impl impl, PyObject *obj, type_id id)
 	return v;
 }
 
+typedef struct loader_impl_py_future_bridge_type
+{
+	loader_impl impl;
+	PyObject *future;
+
+} *loader_impl_py_future_bridge;
+
+static void *py_loader_impl_future_bridge_settle(void *result, void *context, int reject)
+{
+	loader_impl_py_future_bridge bridge = (loader_impl_py_future_bridge)context;
+	loader_impl_py py_impl;
+	PyObject *py_value;
+	PyObject *args_tuple;
+	PyObject *settle_result;
+
+	if (loader_is_destroyed(bridge->impl) == 0)
+	{
+		free(bridge);
+		return NULL;
+	}
+
+	py_impl = loader_impl_get(bridge->impl);
+
+	py_loader_thread_acquire();
+
+	py_value = (result != NULL) ? py_loader_impl_value_to_capi(bridge->impl, value_type_id(result), result) : Py_ReturnNone();
+
+	if (py_value == NULL)
+	{
+		if (PyErr_Occurred() != NULL)
+		{
+			PyErr_Clear();
+		}
+
+		py_value = Py_ReturnNone();
+	}
+
+	if (reject && !PyExceptionInstance_Check(py_value))
+	{
+		PyObject *exc_args = PyTuple_New(1);
+
+		PyTuple_SetItem(exc_args, 0, py_value);
+		py_value = PyObject_CallObject(PyExc_ExceptionPtr(), exc_args);
+		Py_DecRef(exc_args);
+
+		if (py_value == NULL)
+		{
+			if (PyErr_Occurred() != NULL)
+			{
+				PyErr_Clear();
+			}
+
+			py_value = Py_ReturnNone();
+		}
+	}
+
+	args_tuple = PyTuple_New(3);
+
+	Py_IncRef(py_impl->asyncio_loop);
+	Py_IncRef(bridge->future);
+
+	PyTuple_SetItem(args_tuple, 0, py_impl->asyncio_loop);
+	PyTuple_SetItem(args_tuple, 1, bridge->future);
+	PyTuple_SetItem(args_tuple, 2, py_value);
+
+	settle_result = PyObject_Call(reject ? py_impl->thread_background_future_reject : py_impl->thread_background_future_resolve, args_tuple, NULL);
+
+	Py_DecRef(args_tuple);
+
+	if (settle_result == NULL)
+	{
+		if (PyErr_Occurred() != NULL)
+		{
+			py_loader_impl_error_print(py_impl);
+		}
+	}
+	else
+	{
+		Py_DecRef(settle_result);
+	}
+
+	Py_DecRef(bridge->future);
+	free(bridge);
+
+	py_loader_thread_release();
+
+	return NULL;
+}
+
+static void *py_loader_impl_future_bridge_resolve(void *result, void *context)
+{
+	return py_loader_impl_future_bridge_settle(result, context, 0);
+}
+
+static void *py_loader_impl_future_bridge_reject(void *error, void *context)
+{
+	return py_loader_impl_future_bridge_settle(error, context, 1);
+}
+
+static PyObject *py_loader_impl_future_new(loader_impl impl, future f)
+{
+	loader_impl_py py_impl = loader_impl_get(impl);
+	PyObject *args_tuple = PyTuple_New(1);
+	PyObject *py_future;
+	future_interface f_interface;
+
+	Py_IncRef(py_impl->asyncio_loop);
+	PyTuple_SetItem(args_tuple, 0, py_impl->asyncio_loop);
+
+	py_future = PyObject_Call(py_impl->thread_background_future_create, args_tuple, NULL);
+
+	Py_DecRef(args_tuple);
+
+	if (py_future == NULL)
+	{
+		if (PyErr_Occurred() != NULL)
+		{
+			py_loader_impl_error_print(py_impl);
+		}
+
+		return NULL;
+	}
+
+	f_interface = future_interface_get(f);
+
+	if (f_interface != NULL && f_interface->await != NULL)
+	{
+		loader_impl_py_future_bridge bridge = malloc(sizeof(struct loader_impl_py_future_bridge_type));
+		future_return await_ret;
+
+		if (bridge == NULL)
+		{
+			Py_DecRef(py_future);
+			return NULL;
+		}
+
+		bridge->impl = impl;
+		bridge->future = py_future;
+
+		Py_IncRef(py_future);
+
+		await_ret = future_await(f, &py_loader_impl_future_bridge_resolve, &py_loader_impl_future_bridge_reject, bridge);
+
+		if (await_ret != NULL)
+		{
+			value_type_destroy(await_ret);
+		}
+	}
+
+	return py_future;
+}
+
 PyObject *py_loader_impl_value_to_capi(loader_impl impl, type_id id, value v)
 {
 	if (id == TYPE_BOOL)
@@ -1453,9 +1608,21 @@ PyObject *py_loader_impl_value_to_capi(loader_impl impl, type_id id, value v)
 	}
 	else if (id == TYPE_FUTURE)
 	{
-		/* TODO */
-		log_write("metacall", LOG_LEVEL_ERROR, "TODO: Python future not implemented yet for arguments");
-		return Py_ReturnNone();
+		future f = value_to_future(v);
+
+		/* If the future comes from this loader, unwrap it and return the original Python future */
+		if (future_interface_get(f) == future_py_singleton())
+		{
+			loader_impl_py_future py_future = (loader_impl_py_future)future_impl_get(f);
+
+			if (py_future != NULL && py_future->future != NULL)
+			{
+				Py_IncRef(py_future->future);
+				return py_future->future;
+			}
+		}
+
+		return py_loader_impl_future_new(impl, f);
 	}
 	else if (id == TYPE_FUNCTION)
 	{
@@ -2489,6 +2656,30 @@ int py_loader_impl_initialize_thread_background_module(loader_impl_py py_impl)
 		goto error_thread_background_future_check;
 	}
 
+	py_impl->thread_background_future_create = PyObject_GetAttrString(py_impl->thread_background_module, "future_create");
+
+	if (py_impl->thread_background_future_create == NULL || !PyCallable_Check(py_impl->thread_background_future_create))
+	{
+		log_write("metacall", LOG_LEVEL_ERROR, "Error getting future_create function");
+		goto error_thread_background_future_create;
+	}
+
+	py_impl->thread_background_future_resolve = PyObject_GetAttrString(py_impl->thread_background_module, "future_resolve");
+
+	if (py_impl->thread_background_future_resolve == NULL || !PyCallable_Check(py_impl->thread_background_future_resolve))
+	{
+		log_write("metacall", LOG_LEVEL_ERROR, "Error getting future_resolve function");
+		goto error_thread_background_future_resolve;
+	}
+
+	py_impl->thread_background_future_reject = PyObject_GetAttrString(py_impl->thread_background_module, "future_reject");
+
+	if (py_impl->thread_background_future_reject == NULL || !PyCallable_Check(py_impl->thread_background_future_reject))
+	{
+		log_write("metacall", LOG_LEVEL_ERROR, "Error getting future_reject function");
+		goto error_thread_background_future_reject;
+	}
+
 	py_impl->thread_background_start = PyObject_GetAttrString(py_impl->thread_background_module, "start_background_loop");
 
 	if (py_impl->thread_background_start == NULL || !PyCallable_Check(py_impl->thread_background_start))
@@ -2541,6 +2732,12 @@ error_thread_background_run:
 	Py_DecRef(py_impl->thread_background_run);
 error_thread_background_start:
 	Py_DecRef(py_impl->thread_background_start);
+error_thread_background_future_reject:
+	Py_DecRef(py_impl->thread_background_future_reject);
+error_thread_background_future_resolve:
+	Py_DecRef(py_impl->thread_background_future_resolve);
+error_thread_background_future_create:
+	Py_DecRef(py_impl->thread_background_future_create);
 error_thread_background_future_check:
 	Py_DecRef(py_impl->thread_background_future_check);
 error_thread_background_compile:
@@ -2811,6 +3008,9 @@ error_after_thread_background_module:
 	Py_DecRef(py_impl->thread_background_send);
 	Py_DecRef(py_impl->thread_background_stop);
 	Py_DecRef(py_impl->thread_background_register_atexit);
+	Py_DecRef(py_impl->thread_background_future_reject);
+	Py_DecRef(py_impl->thread_background_future_resolve);
+	Py_DecRef(py_impl->thread_background_future_create);
 	Py_DecRef(py_impl->thread_background_future_check);
 error_after_import:
 	Py_DecRef(py_impl->import_module);
@@ -4428,6 +4628,9 @@ int py_loader_impl_destroy(loader_impl impl)
 	Py_DecRef(py_impl->asyncio_module);
 	Py_DecRef(py_impl->py_task_callback_handler);
 	Py_DecRef(py_impl->thread_background_future_check);
+	Py_DecRef(py_impl->thread_background_future_create);
+	Py_DecRef(py_impl->thread_background_future_resolve);
+	Py_DecRef(py_impl->thread_background_future_reject);
 	Py_DecRef(py_impl->thread_background_module);
 	Py_DecRef(py_impl->thread_background_start);
 	Py_DecRef(py_impl->thread_background_run);
