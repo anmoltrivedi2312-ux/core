@@ -3120,7 +3120,7 @@ value node_loader_impl_discover_function_safe(napi_env env, loader_impl_async_di
 
 				if (parameter_name_length > 0)
 				{
-					parameter_name_str = new char[parameter_name_length + 1];
+					parameter_name_str = new char[parameter_name_length + 1]();
 				}
 
 				/* Get parameter name string */
@@ -3147,7 +3147,7 @@ value node_loader_impl_discover_function_safe(napi_env env, loader_impl_async_di
 
 					if (parameter_type_length > 0)
 					{
-						parameter_type_str = new char[parameter_type_length + 1];
+						parameter_type_str = new char[parameter_type_length + 1]();
 					}
 
 					/* Get parameter type string */
@@ -3485,7 +3485,7 @@ void node_loader_impl_discover_safe(napi_env env, loader_impl_async_discover_saf
 
 						if (parameter_name_length > 0)
 						{
-							parameter_name_str = new char[parameter_name_length + 1];
+							parameter_name_str = new char[parameter_name_length + 1]();
 						}
 
 						/* Get parameter name string */
@@ -3512,7 +3512,7 @@ void node_loader_impl_discover_safe(napi_env env, loader_impl_async_discover_saf
 
 							if (parameter_type_length > 0)
 							{
-								parameter_type_str = new char[parameter_type_length + 1];
+								parameter_type_str = new char[parameter_type_length + 1]();
 							}
 
 							/* Get parameter type string */
