@@ -9,6 +9,7 @@ on:
     branches:
       - master
       - develop
+      - ci-investigation # TEMP: remove before opening a PR
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -61,6 +62,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Runner info
+        run: echo "image=${ImageOS}-${ImageVersion} kernel=$(uname -r) $(docker --version) $(sysctl vm.mmap_rnd_bits)"
+
+      # TSan and MSan runtimes abort with "unexpected memory mapping" under high ASLR entropy
+      # (vm.mmap_rnd_bits=32 is the default of recent Ubuntu kernels). The sysctl is global to the
+      # host, so it also applies inside the BuildKit containers that build and run the tests.
+      - name: Lower ASLR entropy (TSan and MSan)
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
       - name: Install, build and run thread sanitizer tests
         run: ./docker-compose.sh test-${{ matrix.sanitizer }}
         env:
@@ -81,6 +91,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Runner info
+        run: echo "image=${ImageOS}-${ImageVersion} kernel=$(uname -r) $(docker --version) $(sysctl vm.mmap_rnd_bits)"
 
       - name: Install, build and run Valgrind memcheck tests
         run: ./docker-compose.sh test-memcheck
@@ -107,6 +120,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Runner info
+        run: echo "image=${ImageOS}-${ImageVersion} kernel=$(uname -r) $(docker --version) $(sysctl vm.mmap_rnd_bits)"
+
+      # TSan and MSan runtimes abort with "unexpected memory mapping" under high ASLR entropy
+      # (vm.mmap_rnd_bits=32 is the default of recent Ubuntu kernels). The sysctl is global to the
+      # host, so it also applies inside the BuildKit containers that build and run the tests.
+      - name: Lower ASLR entropy (TSan and MSan)
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
       - name: Install, build and run Clang tests
         run: ./docker-compose.sh test-${{ matrix.clang }}
         env:
@@ -127,6 +149,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Runner info
+        run: echo "image=${ImageOS}-${ImageVersion} kernel=$(uname -r) $(docker --version) $(sysctl vm.mmap_rnd_bits)"
+
+      # TSan and MSan runtimes abort with "unexpected memory mapping" under high ASLR entropy
+      # (vm.mmap_rnd_bits=32 is the default of recent Ubuntu kernels). The sysctl is global to the
+      # host, so it also applies inside the BuildKit containers that build and run the tests.
+      - name: Lower ASLR entropy (TSan and MSan)
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
 
       - name: Install, build and run Memory Sanitizer tests
         run: ./docker-compose.sh test-memory-sanitizer

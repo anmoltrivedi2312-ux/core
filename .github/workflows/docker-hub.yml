@@ -6,6 +6,7 @@ on:
     branches:
       - master
       - develop
+      - ci-investigation # TEMP: remove before opening a PR
     tags:
       - 'v*.*.*'
 
@@ -61,7 +62,10 @@ jobs:
 
   build:
     name: Build
-    runs-on: ubuntu-latest
+    # ubuntu-latest is moving to Ubuntu 26.04 (Docker 29.4.2), whose default seccomp profile denies socketcall(2),
+    # so 32-bit glibc cannot create sockets (actions/runner-images#14790). Keep linux/386 on 24.04 until the
+    # image ships Docker >= 29.4.3.
+    runs-on: ${{ matrix.platform == 'linux/386' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     needs: matrix
     strategy:
       fail-fast: false
@@ -73,6 +77,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
+      - name: Runner info
+        run: echo "image=${ImageOS}-${ImageVersion} kernel=$(uname -r) $(docker --version)"
 
       - name: Docker Metadata
         id: meta
@@ -97,7 +104,7 @@ jobs:
 
       - name: Build MetaCall Docker Images (local)
         # Test in develop or pull requests
-        if: github.ref == 'refs/heads/develop' || github.event_name == 'pull_request'
+        if: github.ref == 'refs/heads/develop' || github.event_name == 'pull_request' || github.ref == 'refs/heads/ci-investigation' # TEMP: last clause
         env:
           METACALL_PLATFORM: ${{ matrix.platform }}
           DOCKER_BUILDKIT: 1
